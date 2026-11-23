@@ -223,6 +223,107 @@ class PeerNode:
         finally:
             sock.close()
 
+    def download_file_parallel(
+        self,
+        metadata: FileMetadata,
+        output_file_path: str,
+        max_threads: int = 4,
+        override_peers: Optional[List[dict]] = None
+    ) -> bool:
+        """
+        TẢI SONG SONG CÁC CHUNK TỪ NHIỀU PEERS CÙNG LÚC:
+        1. Hỏi Tracker danh sách các Peer đang online và bitfield của họ.
+        2. Phân công từng chunk cho peer phù hợp đang sở hữu chunk đó.
+        3. Chạy đa luồng (ThreadPool) để tải đồng thời từ nhiều nguồn.
+        4. Tự động ghép file khi tất cả các luồng hoàn thành.
+        """
+        file_id = metadata.file_id
+        if override_peers is not None:
+            peers = override_peers
+        else:
+            peers = self.get_peers_from_tracker(file_id)
+
+        # Lọc bỏ chính mình khỏi danh sách nguồn tải
+        available_peers = [
+            p for p in peers 
+            if not (p["ip"] == self.host and p["port"] == self.port) 
+            and p.get("peer_id") != self.peer_id
+        ]
+
+        if not available_peers:
+            self._log("ERROR", "Không tìm thấy peer nào khác trong mạng để tải!")
+            return False
+
+        self._log("INFO", f"Tìm thấy {len(available_peers)} nguồn tải từ Tracker. Bắt đầu lập lịch tải song song...")
+
+        # Xác định những chunk mình còn thiếu
+        with self._chunks_lock:
+            current_owned = self.owned_chunks.get(file_id, set())
+            missing_chunks = [i for i in range(metadata.num_chunks) if i not in current_owned]
+
+        if not missing_chunks:
+            self._log("INFO", "Tất cả các chunk đã có sẵn trên máy!")
+            return merge_chunks(
+                os.path.join(self.storage_dir, "chunks", file_id),
+                output_file_path,
+                metadata
+            )
+
+        # LẬP LỊCH PHÂN PHỐI NGUỒN TẢI:
+        # Với mỗi chunk bị thiếu, chọn peer có giữ chunk đó (theo kiểu xoay vòng Round-Robin để cân bằng tải)
+        download_tasks: List[Tuple[int, dict]] = []
+        peer_assignment_counters = {p["peer_id"]: 0 for p in available_peers}
+
+        for chunk_idx in missing_chunks:
+            # Tìm danh sách những peer đang sở hữu chunk_idx này
+            candidate_peers = [p for p in available_peers if chunk_idx in p.get("bitfield", [])]
+            
+            if not candidate_peers:
+                self._log("ERROR", f"Không có peer nào trong mạng đang sở hữu Chunk {chunk_idx}!")
+                return False
+
+            # Chọn peer ít việc nhất trong danh sách ứng viên (Load balancing đơn giản)
+            chosen_peer = min(candidate_peers, key=lambda p: peer_assignment_counters[p["peer_id"]])
+            peer_assignment_counters[chosen_peer["peer_id"]] += 1
+            # Đưa chosen_peer lên đầu, các peer còn lại làm nguồn dự phòng (Failover)
+            ordered_candidates = [chosen_peer] + [p for p in candidate_peers if p != chosen_peer]
+            download_tasks.append((chunk_idx, ordered_candidates))
+
+        self._log("INFO", f"Kế hoạch tải song song {len(download_tasks)} chunks qua {max_threads} luồng (Kèm chế độ Failover tự động):")
+        for c_idx, candidates in download_tasks:
+            primary = candidates[0]
+            backup_count = len(candidates) - 1
+            self._log("INFO", f" -> Chunk {c_idx} ưu tiên từ {primary['peer_id']} ({primary['ip']}:{primary['port']}) [{backup_count} nguồn dự phòng]")
+
+        # THỰC THI TẢI SONG SONG BẰNG ĐA LUỒNG (THREAD POOL)
+        success = True
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = []
+            for c_idx, candidates in download_tasks:
+                expected_hash = metadata.chunk_hashes[c_idx]
+                f = executor.submit(
+                    self.download_chunk_with_failover,
+                    candidates,
+                    file_id,
+                    c_idx,
+                    expected_hash
+                )
+                futures.append((c_idx, f))
+
+            for c_idx, future in futures:
+                chunk_ok = future.result()
+                if not chunk_ok:
+                    self._log("ERROR", f"Tải song song thất bại ở Chunk {c_idx}")
+                    success = False
+
+        if not success:
+            return False
+
+        # Ghép các chunks lại thành file hoàn chỉnh
+        self._log("INFO", "Tất cả các chunk đã tải thành công! Tiến hành ghép file hoàn chỉnh...")
+        chunks_dir = os.path.join(self.storage_dir, "chunks", file_id)
+        return merge_chunks(chunks_dir, output_file_path, metadata)
+
     # =========================================================================
     # 3. GIAO TIẾP VỚI TRACKER (ĐIỀU PHỐI DANH BẠ)
     # =========================================================================
