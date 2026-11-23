@@ -223,6 +223,34 @@ class PeerNode:
         finally:
             sock.close()
 
+    def download_chunk_with_failover(
+        self,
+        candidate_peers: List[dict],
+        file_id: str,
+        chunk_idx: int,
+        expected_hash: str
+    ) -> bool:
+        """
+        CƠ CHẾ DUNG LỖI & TỰ ĐỘNG CHUYỂN NGUỒN (Fault Tolerance & Failover):
+        Thử tải từ Peer đầu tiên trong danh sách ứng viên.
+        Nếu Peer đó bị sập nguồn / mất mạng hoặc gửi chunk hỏng -> TỰ ĐỘNG CHUYỂN SANG PEER TIẾP THEO!
+        """
+        for peer in candidate_peers:
+            p_ip = peer["ip"]
+            p_port = peer["port"]
+            p_id = peer.get("peer_id", f"{p_ip}:{p_port}")
+
+            self._log("INFO", f"[FAILOVER ENGINE] Đang thử tải Chunk {chunk_idx} từ nguồn: {p_id} ({p_ip}:{p_port})...")
+            success = self.download_chunk(p_ip, p_port, file_id, chunk_idx, expected_hash, auto_announce=True, timeout=2.0)
+
+            if success:
+                return True
+            else:
+                self._log("WARNING", f"[FAILOVER TRIGGERED] Nguồn {p_id} thất bại! Tự động chuyển đổi sang nguồn dự phòng tiếp theo...")
+
+        self._log("ERROR", f"[FAILOVER EXHAUSTED] Đã thử tất cả các nguồn nhưng không tải được Chunk {chunk_idx}!")
+        return False
+
     def download_file_parallel(
         self,
         metadata: FileMetadata,
