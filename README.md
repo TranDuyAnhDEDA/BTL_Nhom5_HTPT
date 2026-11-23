@@ -9,6 +9,16 @@ Hệ thống chia sẻ file ngang hàng P2P mô phỏng giao thức BitTorrent c
 
 ---
 
+## 👥 Danh sách thành viên và Phân công nhiệm vụ
+
+| STT | Họ và tên | Mã sinh viên | Vai trò & Nhiệm vụ đảm nhận | Đóng góp |
+| :---: | :--- | :---: | :--- | :---: |
+| **1** | **Trần Duy Anh** | **B23DCDT020** | **Nhóm trưởng**: Thiết kế kiến trúc tổng thể P2P, phát triển giao thức TCP Socket nhị phân (Custom Framing), lập trình đa luồng tải song song, cơ chế chịu lỗi (Failover & Rogue Peer) và tích hợp hệ thống. | **36%** |
+| **2** | **Trần Gia Nam** | **B23DCVT302** | **Thành viên**: Xây dựng Máy chủ điều phối Tracker Server (FastAPI REST API), quản lý danh bạ Swarm trong RAM, luồng quét nhịp tim Heartbeat (timeout 15s) và phát triển Web Dashboard. | **32%** |
+| **3** | **Hà Đình Bình** | **B23DCVT051** | **Thành viên**: Xây dựng phân hệ Xử lý tệp lõi (cắt mảnh 512 KB, tính mã băm SHA-256, ghép tệp), công cụ dòng lệnh CLI, kiểm thử mạng LAN đa máy tính và đo đạc biểu đồ hiệu năng. | **32%** |
+
+---
+
 ## Cấu trúc thư mục dự án
 
 ```text
